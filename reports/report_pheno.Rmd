@@ -270,7 +270,7 @@ clima_flujo %>%
   ggplot(.,aes(date,valor,colour=variables)) +
   geom_point(size=.5) +
   geom_line(size=.3) +
-  scale_x_date(date_breaks = '3 week',date_labels = "%d-%b") +
+  scale_x_date(date_breaks = '3 week',date_labels = "%d-%b",expand=c(0,0)) +
   scale_color_brewer(palette = 'Paired') +
   facet_grid(grupo~cultivo,scales = 'free') +
   guides(colour = guide_legend(nrow = 1)) +
