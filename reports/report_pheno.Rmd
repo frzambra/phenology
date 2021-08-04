@@ -1,0 +1,281 @@
+---
+title: "Monitoreo de fenología en cultivos de trigo y maíz <br> derivado de datos satelitales Sentinel-2"
+subtitle: "Proyecto Fondecyt de Iniciación N°11190360"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r loadPackages, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(raster)
+library(sf)
+library(stars)
+library(leaflet)
+library(plotly)
+library(hrbrthemes)
+
+library(viridis)
+library(ggthemes)
+library(tmap)
+
+```
+
+```{r setup, include=FALSE}
+#tmap options
+opts <- tmap_options(basemaps = c(Imagery = "Esri.WorldImagery",
+                                  Canvas = "Esri.WorldGrayCanvas", 
+                                  Topo = "OpenTopoMap"))
+
+#dates of in-situ biomass measurements
+dates_breaks <- c("2020-11-05","2020-11-19","2020-12-09","2020-12-29","2021-01-18")
+
+in.vector<-"../data/spatial"
+
+#in.csv<-"E:/ALBERTO/HEMERA/GITHUB/sen2agri_analisis/output/csv"
+in.csv<-"../data/csv"
+in.tif<-"../data/output/tif"
+
+#leer datos ----------------------------------------------------------------------
+#tablas
+lf <- dir(in.csv, full.names = TRUE,pattern ='^(clima|datos)')
+namesVar <- sapply(strsplit(sapply(strsplit(lf,'\\/'),'[[',4),'\\.'),'[[',1)
+
+seq_along(lf) %>%
+  map(.,function(i){
+    r <- read.csv(lf[i], sep=";") %>% 
+      as_tibble() %>% 
+      mutate(date=ymd(date)) 
+    
+    assign(namesVar[i],r,env=globalenv())
+  })
+
+#vectores
+lyrs <- st_layers(('../data/spatial/monitoreo_villa_baviera.gpkg'))
+
+ptos_muestreo <- lyrs$name[1:2] %>% 
+  map(function(lyr_name){
+    ptos <- read_sf('../data/spatial/monitoreo_villa_baviera.gpkg',layer = lyr_name)
+    names(ptos)[2] <- 'muestra'
+    ptos$cultivo <- sapply(strsplit(lyr_name,'_'),'[[',3)
+    return(ptos)
+  }) %>%  bind_rows()
+
+pols <- st_read('../data/spatial/monitoreo_villa_baviera.gpkg',layer = lyrs$name[3])
+```
+
+# Indice  {.tabset}
+## Área de estudio 
+
+Se tienen dos predios experimentales de cultivos maíz y trigo localizados en la localidad de Villa Baviera. 
+
+En cada predio se seleccionaron 5 puntos de muestreo y se realizaron 5 campañas en la temporada, donde se cosechó la biomasa de trigo (50 cm2) y maiz (10 plantas)
+
+
+```{r map, echo=FALSE,fig.width=10,message=FALSE}
+tmap_mode("view")
+tm_shape(pols,name = 'Predios') +
+  tm_borders(col='black',lwd=3) +
+  tm_shape(ptos_muestreo,name = 'Puntos de monitoreo') +
+  tm_dots()
+
+```
+
+## Biomasa  
+
+Las cinco campañas realizadas corresponden a las fechas `r format(ymd(dates_breaks),"%d-%b")`
+
+
+```{r, echo=FALSE,message = FALSE,fig.width = 10}
+ # grafico peso total
+datos_muestreo %>%
+  mutate(muestra = as.factor(muestra)) %>% 
+  group_by(cultivo,muestra,date) %>%
+  summarise(peso=sum(peso)) %>%
+  ggplot(., aes(date, peso,colour=muestra))+
+  geom_point(size=.3) +
+  geom_line(size =.2) + 
+  scale_color_brewer(palette = 'Spectral') +
+  scale_x_date(date_breaks = '2 week',date_labels = '%d-%b') + 
+  labs(y='peso [g]') +
+  facet_grid(~cultivo) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=0,  hjust = 1),
+        legend.position = "bottom",
+        axis.title.x = element_blank())
+```
+
+```{r , echo=FALSE,fig.width=10}
+# grafico peso por estructura
+
+datos_muestreo %>%
+  ggplot(., aes(date, peso, fill=estructura))+
+  geom_col() +
+  scale_fill_brewer(palette = "Spectral") +
+  scale_x_date(breaks=ymd(dates_breaks),date_labels = '%d-%b')+
+  facet_grid(muestra~cultivo) + 
+  labs(y = 'peso [g]') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=0,  hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "bottom") 
+```
+
+## NDVI  
+
+El NDVI entrega la informacion del vigor fotosintetico de la vegetación.
+
+La fenología entrega el día del año de 4 etapas del desarrollo del cultivo:
+
+<!-- + The starting date for the growing season (t0) -->
+<!-- + The date of the maximum growth rate (x0) -->
+<!-- + The length of the maturity plateau (L) -->
+<!-- + The date of end of the growing season (t3) -->
+
+
+```{r,echo=FALSE, warning=FALSE,message=FALSE, fig.width=12,fig.cap="Serie temporal de NDVI (lineas de color) y Etapas fenológicas (lineas verticales)"}
+
+stage <- c('t0','x0','L','t3')
+
+datos_feno %>%
+  mutate(st = stage[band]) %>% 
+  select(-geometry,-band) %>% 
+  filter(valor > 100) ->datos_feno2
+
+datos_ndvi %>% 
+  ggplot(.,aes(date,valor)) +
+  geom_line() +
+  geom_point()+
+  geom_vline(data=datos_feno2,aes(xintercept =  date,colour=st), linetype="dashed") +
+  geom_text(data=filter(datos_feno2,st == 't0'),
+            aes(x=date-30,y=0.7,label=paste('t0=',valor)),
+            size=3)+
+  geom_text(data=filter(datos_feno2,st == 'x0'),
+            aes(x=date+50,y=0.5, 
+                label=paste('x0=',valor)),
+            size=3, angle=0)+
+  geom_text(data=filter(datos_feno2,st == 't3'),
+            aes(x=date-30,y=0.3, 
+                label=paste('t3=',valor)),
+            size=3, angle=0) + 
+  facet_grid(cultivo~muestra) +
+  scale_x_date(date_breaks="1 months",date_labels = '%b-%d')+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=60,  hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank())
+```
+
+```{r, echo = FALSE,fig.width = 10,message=FALSE,warning=FALSE}
+datos_ndvi %>% 
+  group_by(cultivo,muestra) %>% 
+  mutate(cndvi = scale(cndvi)) -> datos_ndvisc
+
+datos_muestreo %>%
+  mutate(muestra = as.factor(muestra)) %>% 
+  group_by(cultivo,muestra,date) %>%
+  summarise(peso=sum(peso)) %>%
+  mutate(peso = scale(peso)) %>% 
+  ggplot(.)+
+  geom_col(data = ~.,aes(date, scale(peso))) +
+  #geom_point(size=.3) +
+  #geom_line(size =.2) +  
+  geom_line(data = datos_ndvisc,aes(date,scale(cndvi)),colour='red') +
+  #scale_color_brewer(palette = 'Spectral') +
+  scale_x_date(date_breaks = '2 week',date_labels = '%d-%b',limits = ymd(c("2020-10-01","2021-02-01")),expand =c(0,0)) +
+  facet_grid(cultivo~muestra,scales = 'free') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90,  hjust = 1),
+        legend.position = "bottom",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+```
+
+
+### Datos raster 
+
+```{r,echo = FALSE,fig.width = 10,message = FALSE,fig.cap = 'Serie temporal de imagenes de NDVI en predio de maíz'}
+dates <- ymd(read_csv('../data/spatial/raster/all_dates.txt',col_names = FALSE)$X1)
+ndvi_maiz <- read_stars('../data/spatial/raster/ndvi_maiz.tif')
+
+ndvi_maiz <-st_redimension(ndvi_maiz) %>% 
+  st_set_dimensions(3, dates, names = "Date")
+
+ptos <- filter(ptos_muestreo,cultivo == 'maiz')
+
+tmap_mode('plot')
+tm_shape(ndvi_maiz) +
+  tm_raster(title = 'NDVI',palette = 'RdYlGn',style = 'cont',n=10,legend.is.portrait = TRUE) +
+  tm_shape(ptos) +
+  tm_markers(shape =1,text = 'muestra') +
+  tm_facets() +
+  tm_layout(legend.outside.position =  "right",
+            asp=1)
+```
+
+```{r,echo = FALSE,fig.width = 10,message = FALSE,fig.cap = 'Serie temporal de imagenes de NDVI en predio de trigo'}
+ndvi_trigo <- read_stars('../data/spatial/raster/ndvi_trigo.tif')
+
+ndvi_trigo <-st_redimension(ndvi_trigo) %>% 
+  st_set_dimensions(3, dates, names = "Date")
+
+ptos <- filter(ptos_muestreo,cultivo == 'trigo')
+
+tmap_mode('plot')
+tm_shape(ndvi_trigo,is.master = TRUE) +
+  tm_raster(title = 'NDVI',palette = 'RdYlGn',style = 'cont',n=10,legend.is.portrait = TRUE) +
+  tm_shape(ptos) +
+  tm_markers(shape =1,text = 'muestra') +
+  tm_facets(nrow=3) +
+  tm_layout(legend.outside.position =  "right",
+            asp=1)
+```
+
+## Área Foliar
+
+```{r, echo=FALSE,fig.width = 10}
+datos_lai %>%
+  ggplot(.,aes(date,valor, color=as.factor(muestra))) + 
+  geom_line() +
+  geom_point()+
+  facet_grid(~cultivo) +
+  scale_color_brewer(name='muestras',palette = "Spectral")+ 
+  labs(y = expression(paste('LAI [',m^2~m^{-2},']'))) +
+  scale_x_date(date_breaks="1 months",date_labels = '%d-%b')+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=0, size=7, hjust = 1),
+        legend.position = "bottom",
+        axis.title.x = element_blank()) 
+```
+
+## Clima
+
+```{r, echo=FALSE,fig.width=10,fig.height=7,message=FALSE}
+clima_estado %>%
+  group_by(cultivo,variables, date=floor_date(date, "week")) %>%
+  filter(variables %in% c("tmin", "tmax")) %>%
+  rbind(filter(clima_flujo,variables %in% c("wc15", "wc30", "wc45"))) %>% 
+  summarize(valor=mean(valor)) -> clima_estado2
+  
+clima_flujo %>% 
+  group_by(cultivo,variables, date=floor_date(date, "week")) %>%
+  filter(variables %in% c("pp","et0")) %>% 
+  summarize(valor = sum(valor)) %>% 
+  rbind(clima_estado2) %>% 
+  mutate(grupo = ifelse(variables %in% c("tmin", "tmax"),'Temp',
+                         ifelse(variables %in% c("wc15", "wc30", "wc45"),'Humedad de Suelo',
+                                variables))) %>% 
+  ggplot(.,aes(date,valor,colour=variables)) +
+  geom_point(size=.5) +
+  geom_line(size=.3) +
+  scale_x_date(date_breaks = '3 week',date_labels = "%d-%b") +
+  scale_color_brewer(palette = 'Paired') +
+  facet_grid(grupo~cultivo,scales = 'free') +
+  guides(colour = guide_legend(nrow = 1)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size=7),
+        axis.title = element_blank(),
+        legend.position = 'bottom')
+```
